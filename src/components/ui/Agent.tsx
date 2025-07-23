@@ -63,6 +63,6 @@ const Agent = ({userName}:AgentProps) => {
     </div>
     </>
   )
-}
+} 
 
 export default Agent
