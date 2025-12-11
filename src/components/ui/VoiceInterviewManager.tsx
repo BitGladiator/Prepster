@@ -82,8 +82,7 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
         utterance.rate = 0.9;
         utterance.pitch = 1;
         utterance.volume = 1;
-        
-        // Get available voices and prefer English ones
+    
         const voices = window.speechSynthesis.getVoices();
         const englishVoice = voices.find(voice => voice.lang.startsWith('en-')) || voices[0];
         if (englishVoice) {
@@ -119,17 +118,12 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
       content: transcript
     };
     setMessages(prev => [...prev, userMessage]);
-
-    // Stop listening while AI responds
     if (recognitionRef.current) {
       recognitionRef.current.stop();
     }
     setIsListening(false);
 
-    // Get AI response
     await getAIResponse(transcript);
-
-    // Move to next question or end interview
     if (currentQuestionIndex < (questions?.length || 5) - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
       setTimeout(() => {
@@ -188,7 +182,6 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
     setMessages(prev => [...prev, questionMessage]);
     await speak(question);
 
-    // Start listening for user response
     if (recognitionRef.current) {
       recognitionRef.current.start();
       setIsListening(true);
@@ -197,8 +190,6 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
 
   const handleCall = async () => {
     setCallStatus(CallStatus.CONNECTING);
-
-    // Load voices if not loaded
     if ('speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
     }
@@ -206,7 +197,6 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
     setTimeout(async () => {
       setCallStatus(CallStatus.ACTIVE);
 
-      // Start with greeting
       const greeting = `Hello ${userName}! Thank you for taking the time to speak with me today. I'm excited to learn more about you and your experience. Let's begin with the first question.`;
       const greetingMessage: SavedMessage = {
         role: 'assistant',
@@ -216,7 +206,7 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
       
       await speak(greeting);
       
-      // Ask first question after greeting
+
       setTimeout(() => {
         askNextQuestion();
       }, 1000);
