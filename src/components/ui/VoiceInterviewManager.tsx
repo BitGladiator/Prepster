@@ -18,12 +18,12 @@ interface SavedMessage {
 
 interface VoiceInterviewManagerProps {
   userName: string;
-  userId: string;
+  userId?: string;
   type: 'generate' | 'interview';
   questions?: string[];
 }
 
-const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInterviewManagerProps) => {
+const VoiceInterviewManager = ({ userName, userId = '', type, questions }: VoiceInterviewManagerProps) => {
   const router = useRouter();
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [callStatus, setCallStatus] = useState<CallStatus>(CallStatus.INACTIVE);
@@ -35,6 +35,7 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
   const synthRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   useEffect(() => {
+    // Initialize Speech Recognition
     if (typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
@@ -82,7 +83,8 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
         utterance.rate = 0.9;
         utterance.pitch = 1;
         utterance.volume = 1;
-    
+        
+        // Get available voices and prefer English ones
         const voices = window.speechSynthesis.getVoices();
         const englishVoice = voices.find(voice => voice.lang.startsWith('en-')) || voices[0];
         if (englishVoice) {
@@ -118,12 +120,15 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
       content: transcript
     };
     setMessages(prev => [...prev, userMessage]);
+
     if (recognitionRef.current) {
       recognitionRef.current.stop();
     }
     setIsListening(false);
 
     await getAIResponse(transcript);
+
+
     if (currentQuestionIndex < (questions?.length || 5) - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
       setTimeout(() => {
@@ -190,6 +195,7 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
 
   const handleCall = async () => {
     setCallStatus(CallStatus.CONNECTING);
+
     if ('speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
     }
@@ -206,7 +212,6 @@ const VoiceInterviewManager = ({ userName, userId, type, questions }: VoiceInter
       
       await speak(greeting);
       
-
       setTimeout(() => {
         askNextQuestion();
       }, 1000);
