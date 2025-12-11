@@ -32,19 +32,81 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
   const [isListening, setIsListening] = useState(false);
 
   const recognitionRef = useRef<any>(null);
-  const synthRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const isPlayingRef = useRef(false);
+
+  // FIXED: Reliable chunked speech function
+  const speakInChunks = async (text: string) => {
+    if (!('speechSynthesis' in window)) {
+      console.error('Speech synthesis not supported');
+      return;
+    }
+
+    // Cancel any ongoing speech
+    window.speechSynthesis.cancel();
+    isPlayingRef.current = true;
+    setIsSpeaking(true);
+
+    // Split into sentences (max ~120 chars each for reliability)
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    
+    console.log(`Speaking ${sentences.length} sentences`);
+
+    for (let i = 0; i < sentences.length; i++) {
+      if (!isPlayingRef.current) break;
+
+      const sentence = sentences[i].trim();
+      if (!sentence) continue;
+
+      await new Promise<void>((resolve) => {
+        const utterance = new SpeechSynthesisUtterance(sentence);
+        
+        // Use default voice (most reliable)
+        const voices = window.speechSynthesis.getVoices();
+        const voice = voices.find(v => v.default) || voices[0];
+        if (voice) utterance.voice = voice;
+        
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+
+        utterance.onend = () => {
+          console.log(`Finished sentence ${i + 1}/${sentences.length}`);
+          resolve();
+        };
+
+        utterance.onerror = (e) => {
+          console.error('Speech error:', e.error);
+          resolve(); // Continue anyway
+        };
+
+        // Small delay between sentences
+        setTimeout(() => {
+          window.speechSynthesis.speak(utterance);
+        }, 200);
+      });
+
+      // Pause between sentences
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+
+    isPlayingRef.current = false;
+    setIsSpeaking(false);
+    console.log('Speech complete');
+  };
 
   useEffect(() => {
     // Initialize Speech Recognition
     if (typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
+      recognitionRef.current.continuous = false; // Changed to false for better control
       recognitionRef.current.interimResults = false;
       recognitionRef.current.lang = 'en-US';
 
       recognitionRef.current.onresult = (event: any) => {
         const transcript = event.results[event.results.length - 1][0].transcript;
+        console.log('User said:', transcript);
+        setIsListening(false);
         handleUserResponse(transcript);
       };
 
@@ -54,9 +116,8 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
       };
 
       recognitionRef.current.onend = () => {
-        if (callStatus === CallStatus.ACTIVE) {
-          recognitionRef.current.start();
-        }
+        console.log('Recognition ended');
+        setIsListening(false);
       };
     }
 
@@ -65,54 +126,15 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
         recognitionRef.current.stop();
       }
       window.speechSynthesis.cancel();
+      isPlayingRef.current = false;
     };
-  }, [callStatus]);
+  }, []);
 
   useEffect(() => {
     if (callStatus === CallStatus.FINISHED) {
       router.push('/');
     }
   }, [callStatus, router]);
-
-  const speak = (text: string) => {
-    return new Promise<void>((resolve) => {
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 0.9;
-        utterance.pitch = 1;
-        utterance.volume = 1;
-        
-        // Get available voices and prefer English ones
-        const voices = window.speechSynthesis.getVoices();
-        const englishVoice = voices.find(voice => voice.lang.startsWith('en-')) || voices[0];
-        if (englishVoice) {
-          utterance.voice = englishVoice;
-        }
-
-        utterance.onstart = () => {
-          setIsSpeaking(true);
-        };
-
-        utterance.onend = () => {
-          setIsSpeaking(false);
-          resolve();
-        };
-
-        utterance.onerror = (error) => {
-          console.error('Speech synthesis error:', error);
-          setIsSpeaking(false);
-          resolve();
-        };
-
-        synthRef.current = utterance;
-        window.speechSynthesis.speak(utterance);
-      } else {
-        resolve();
-      }
-    });
-  };
 
   const handleUserResponse = async (transcript: string) => {
     const userMessage: SavedMessage = {
@@ -121,21 +143,17 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
     };
     setMessages(prev => [...prev, userMessage]);
 
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
-    setIsListening(false);
-
+    // Get AI response
     await getAIResponse(transcript);
 
-
+    // Move to next question or end interview
     if (currentQuestionIndex < (questions?.length || 5) - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
       setTimeout(() => {
         askNextQuestion();
-      }, 1000);
+      }, 1500);
     } else {
-      await speak("Thank you for your time today. The interview is now complete. We'll be in touch soon with feedback.");
+      await speakInChunks("Thank you for your time. The interview is complete.");
       setTimeout(() => {
         handleDisconnect();
       }, 2000);
@@ -163,7 +181,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
       };
 
       setMessages(prev => [...prev, assistantMessage]);
-      await speak(data.response);
+      await speakInChunks(data.response);
     } catch (error) {
       console.error('Error getting AI response:', error);
       const fallbackMessage: SavedMessage = {
@@ -171,51 +189,84 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
         content: "I see. Could you elaborate on that?"
       };
       setMessages(prev => [...prev, fallbackMessage]);
-      await speak(fallbackMessage.content);
+      await speakInChunks(fallbackMessage.content);
     }
   };
 
   const askNextQuestion = async () => {
-    if (!questions || currentQuestionIndex >= questions.length) return;
+    if (!questions || questions.length === 0) {
+      console.error('No questions available!');
+      await speakInChunks("No questions were loaded. Please contact support.");
+      return;
+    }
+
+    if (currentQuestionIndex >= questions.length) {
+      console.log('All questions completed');
+      return;
+    }
 
     const question = questions[currentQuestionIndex];
+    console.log(`Asking question ${currentQuestionIndex + 1}: ${question}`);
+    
     const questionMessage: SavedMessage = {
       role: 'assistant',
       content: question
     };
 
     setMessages(prev => [...prev, questionMessage]);
-    await speak(question);
+    await speakInChunks(question);
 
-    if (recognitionRef.current) {
-      recognitionRef.current.start();
-      setIsListening(true);
+    // Start listening after speech completes
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    if (recognitionRef.current && callStatus === CallStatus.ACTIVE) {
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+        console.log('Started listening for response');
+      } catch (error) {
+        console.error('Error starting speech recognition:', error);
+      }
     }
   };
 
   const handleCall = async () => {
-    setCallStatus(CallStatus.CONNECTING);
-
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.getVoices();
+    console.log('Starting interview with questions:', questions);
+    
+    if (!questions || questions.length === 0) {
+      alert('No interview questions available. Please generate questions first.');
+      return;
     }
 
-    setTimeout(async () => {
-      setCallStatus(CallStatus.ACTIVE);
+    setCallStatus(CallStatus.CONNECTING);
 
-      const greeting = `Hello ${userName}! Thank you for taking the time to speak with me today. I'm excited to learn more about you and your experience. Let's begin with the first question.`;
-      const greetingMessage: SavedMessage = {
-        role: 'assistant',
-        content: greeting
-      };
-      setMessages([greetingMessage]);
-      
-      await speak(greeting);
-      
-      setTimeout(() => {
-        askNextQuestion();
-      }, 1000);
-    }, 1500);
+    // Wait for voices to load
+    await new Promise<void>((resolve) => {
+      if (window.speechSynthesis.getVoices().length > 0) {
+        resolve();
+      } else {
+        window.speechSynthesis.onvoiceschanged = () => resolve();
+        setTimeout(resolve, 1000); // Fallback
+      }
+    });
+
+    setCallStatus(CallStatus.ACTIVE);
+
+    // Short greeting
+    const greeting = `Hello ${userName}! Let's begin your interview.`;
+    const greetingMessage: SavedMessage = {
+      role: 'assistant',
+      content: greeting
+    };
+    setMessages([greetingMessage]);
+    
+    console.log('Speaking greeting...');
+    await speakInChunks(greeting);
+    
+    // Ask first question after greeting
+    console.log('Waiting before first question...');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await askNextQuestion();
   };
 
   const handleDisconnect = () => {
@@ -224,6 +275,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
       recognitionRef.current.stop();
     }
     window.speechSynthesis.cancel();
+    isPlayingRef.current = false;
     setIsListening(false);
   };
 
@@ -240,7 +292,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
           </div>
           <h3>AI Interviewer</h3>
           {isListening && (
-            <p className="text-sm text-primary-200 mt-2">Listening...</p>
+            <p className="text-sm text-success-100 mt-2 animate-pulse">🎤 Listening...</p>
           )}
         </div>
         <div className="card-border">
@@ -266,7 +318,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
         </div>
       )}
 
-      <div className="w-full flex justify-center">
+      <div className="w-full flex justify-center gap-4">
         {callStatus !== 'ACTIVE' ? (
           <button
             className='relative btn-call'
@@ -281,9 +333,18 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
             </span>
           </button>
         ) : (
-          <button className='btn-disconnect' onClick={handleDisconnect}>
-            End Interview
-          </button>
+          <>
+            <button 
+              className='btn-secondary' 
+              onClick={askNextQuestion}
+              disabled={!questions || currentQuestionIndex >= questions.length || isSpeaking}
+            >
+              {isSpeaking ? 'Speaking...' : 'Next Question'}
+            </button>
+            <button className='btn-disconnect' onClick={handleDisconnect}>
+              End Interview
+            </button>
+          </>
         )}
       </div>
 
