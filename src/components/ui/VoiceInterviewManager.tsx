@@ -36,7 +36,6 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
   const isSpeakingRef = useRef(false);
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  // SIMPLIFIED: Direct speech function
   const speakText = async (text: string): Promise<void> => {
     return new Promise((resolve, reject) => {
       if (!('speechSynthesis' in window)) {
@@ -45,26 +44,21 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
         return;
       }
 
-      // Stop any ongoing speech
       window.speechSynthesis.cancel();
       isSpeakingRef.current = false;
       setIsSpeaking(false);
 
-      // Clear any existing utterance
       if (currentUtteranceRef.current) {
         currentUtteranceRef.current.onend = null;
         currentUtteranceRef.current.onerror = null;
         currentUtteranceRef.current = null;
       }
 
-      // Create new utterance
       const utterance = new SpeechSynthesisUtterance(text);
       currentUtteranceRef.current = utterance;
-
-      // Get voices
       const voices = window.speechSynthesis.getVoices();
       if (voices.length > 0) {
-        // Prefer a female voice if available, else default
+    
         const voice = voices.find(v => v.name.includes('Female')) || 
                      voices.find(v => v.default) || 
                      voices[0];
@@ -98,13 +92,13 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
         
         if (event.error === 'canceled') {
           console.log('Speech was cancelled, continuing...');
-          resolve(); // Resolve anyway to continue flow
+          resolve(); 
         } else {
           reject(event.error);
         }
       };
 
-      // IMPORTANT: Add a small delay to ensure clean state
+  
       setTimeout(() => {
         try {
           window.speechSynthesis.speak(utterance);
@@ -130,7 +124,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
   };
 
   useEffect(() => {
-    // Initialize Speech Recognition
+
     const initSpeechRecognition = () => {
       if (typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
         const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -160,7 +154,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
           setIsListening(false);
           setDebugInfo(`Recognition error: ${event.error}`);
           
-          // Auto-restart on non-fatal errors
+  
           if (['no-speech', 'audio-capture', 'network'].includes(event.error)) {
             setTimeout(() => {
               if (callStatus === CallStatus.ACTIVE && !isSpeakingRef.current) {
@@ -174,7 +168,6 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
           console.log('Speech recognition ended');
           setIsListening(false);
           
-          // Auto-restart if we should be listening
           if (callStatus === CallStatus.ACTIVE && !isSpeakingRef.current) {
             setTimeout(() => {
               startListening();
@@ -186,10 +179,10 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
       }
     };
 
-    // Initialize voices
+
     const initVoices = () => {
       if ('speechSynthesis' in window) {
-        // Force voices to load
+
         const voices = window.speechSynthesis.getVoices();
         if (voices.length === 0) {
           window.speechSynthesis.onvoiceschanged = () => {
@@ -248,7 +241,6 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
       }, 200);
     } catch (stopError) {
       console.error('Error in startListening:', stopError);
-      // Try starting anyway
       try {
         recognitionRef.current.start();
       } catch (error) {
@@ -277,17 +269,14 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
 
     stopListening();
 
-    // Get AI response
     await getAIResponse(transcript);
 
-    // Move to next question or end interview
     if (currentQuestionIndex < (questions?.length || 5) - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
       setTimeout(() => {
         askNextQuestion();
       }, 1000);
     } else {
-      // End of interview
       await speakText("Thank you for your time. The interview is now complete.");
       setTimeout(() => {
         handleDisconnect();
@@ -321,10 +310,8 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
 
       setMessages(prev => [...prev, assistantMessage]);
       
-      // Speak the response
       await speakText(data.response);
       
-      // If this was a question, start listening for answer
       if (currentQuestionIndex < (questions?.length || 5)) {
         setTimeout(() => {
           startListening();
@@ -339,7 +326,6 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
       setMessages(prev => [...prev, fallbackMessage]);
       await speakText(fallbackMessage.content);
       
-      // Move to next question on error
       if (currentQuestionIndex < (questions?.length || 5) - 1) {
         setCurrentQuestionIndex(prev => prev + 1);
         setTimeout(() => {
@@ -376,22 +362,18 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
     setMessages(prev => [...prev, questionMessage]);
     setDebugInfo(`Asking question ${currentQuestionIndex + 1}`);
     
-    // Stop any ongoing speech/listening
     stopSpeech();
     stopListening();
-    
-    // Speak the question
+  
     try {
       await speakText(question);
       
-      // Start listening for answer after speaking
       console.log('Question spoken, starting to listen...');
       setTimeout(() => {
         startListening();
       }, 800);
     } catch (error) {
       console.error('Failed to speak question:', error);
-      // Even if speech fails, start listening
       setTimeout(() => {
         startListening();
       }, 800);
@@ -410,19 +392,17 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
     stopSpeech();
     stopListening();
     
-    // Reset state
     setMessages([]);
     setCurrentQuestionIndex(0);
     setDebugInfo('Initializing...');
 
-    // Check for speech support
+
     if (!('speechSynthesis' in window)) {
       alert('Your browser does not support text-to-speech. Please use Chrome, Edge, or Safari.');
       setCallStatus(CallStatus.INACTIVE);
       return;
     }
 
-    // Ensure voices are loaded
     await new Promise<void>((resolve) => {
       const voices = window.speechSynthesis.getVoices();
       if (voices.length > 0) {
@@ -435,7 +415,6 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
           window.speechSynthesis.onvoiceschanged = null;
           resolve();
         };
-        // Fallback timeout
         setTimeout(resolve, 2000);
       }
     });
@@ -443,7 +422,6 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
     setCallStatus(CallStatus.ACTIVE);
     setDebugInfo('Interview started');
 
-    // Start with greeting
     const greeting = `Hello ${userName}! Let's begin your interview.`;
     const greetingMessage: SavedMessage = {
       role: 'assistant',
@@ -454,14 +432,14 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
     try {
       await speakText(greeting);
       
-      // Ask first question after greeting
+
       console.log('Greeting complete, asking first question...');
       setTimeout(() => {
         askNextQuestion();
       }, 1000);
     } catch (error) {
       console.error('Failed to speak greeting:', error);
-      // Even if greeting fails, try to ask first question
+    
       setTimeout(() => {
         askNextQuestion();
       }, 1000);
@@ -561,7 +539,6 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
         )}
       </div>
 
-      {/* Debug info */}
       <div className="w-full text-center mt-4">
         <div className="inline-block bg-gray-800 text-gray-100 text-xs p-3 rounded-lg">
           <p>Status: {callStatus}</p>
