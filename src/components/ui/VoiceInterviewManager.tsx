@@ -2,7 +2,7 @@
 import { cn } from '@/lib/utils';
 import Image from 'next/image'
 import { useRouter } from 'next/navigation';
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 
 enum CallStatus {
   INACTIVE = 'INACTIVE',
@@ -30,437 +30,367 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
   const [messages, setMessages] = useState<SavedMessage[]>([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [isListening, setIsListening] = useState(false);
-  const [debugInfo, setDebugInfo] = useState<string>('');
+  const [debugInfo, setDebugInfo] = useState('Initializing...');
+  const [voicesLoaded, setVoicesLoaded] = useState(false);
+  const [isSpeechSupported, setIsSpeechSupported] = useState(false);
+  const [isRecognitionSupported, setIsRecognitionSupported] = useState(false);
+  const [hasMicrophonePermission, setHasMicrophonePermission] = useState(false);
 
   const recognitionRef = useRef<any>(null);
   const isSpeakingRef = useRef(false);
+  const isListeningRef = useRef(false);
+  const isProcessingRef = useRef(false);
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-
-  const speakText = async (text: string): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      if (!('speechSynthesis' in window)) {
-        console.error('Speech synthesis not supported');
-        reject('Speech synthesis not supported');
-        return;
-      }
-
-      window.speechSynthesis.cancel();
-      isSpeakingRef.current = false;
-      setIsSpeaking(false);
-
-      if (currentUtteranceRef.current) {
-        currentUtteranceRef.current.onend = null;
-        currentUtteranceRef.current.onerror = null;
-        currentUtteranceRef.current = null;
-      }
-
-      const utterance = new SpeechSynthesisUtterance(text);
-      currentUtteranceRef.current = utterance;
-      const voices = window.speechSynthesis.getVoices();
-      if (voices.length > 0) {
-    
-        const voice = voices.find(v => v.name.includes('Female')) || 
-                     voices.find(v => v.default) || 
-                     voices[0];
-        utterance.voice = voice;
-      }
-
-      utterance.rate = 0.9;
-      utterance.pitch = 1.0;
-      utterance.volume = 1.0;
-
-      utterance.onstart = () => {
-        console.log('Speech started:', text.substring(0, 30) + '...');
-        isSpeakingRef.current = true;
-        setIsSpeaking(true);
-        setDebugInfo(`Speaking: "${text.substring(0, 30)}..."`);
-      };
-
-      utterance.onend = () => {
-        console.log('Speech ended successfully');
-        isSpeakingRef.current = false;
-        setIsSpeaking(false);
-        currentUtteranceRef.current = null;
-        resolve();
-      };
-
-      utterance.onerror = (event) => {
-        console.error('Speech error:', event.error);
-        isSpeakingRef.current = false;
-        setIsSpeaking(false);
-        currentUtteranceRef.current = null;
-        
-        if (event.error === 'canceled') {
-          console.log('Speech was cancelled, continuing...');
-          resolve(); 
-        } else {
-          reject(event.error);
-        }
-      };
-
-  
-      setTimeout(() => {
-        try {
-          window.speechSynthesis.speak(utterance);
-        } catch (error) {
-          console.error('Error starting speech:', error);
-          reject(error);
-        }
-      }, 100);
-    });
-  };
-
-  const stopSpeech = () => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    isSpeakingRef.current = false;
-    setIsSpeaking(false);
-    if (currentUtteranceRef.current) {
-      currentUtteranceRef.current.onend = null;
-      currentUtteranceRef.current.onerror = null;
-      currentUtteranceRef.current = null;
-    }
-  };
+  const selectedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recognitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-
-    const initSpeechRecognition = () => {
-      if (typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
-        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-        const recognition = new SpeechRecognition();
-        
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.lang = 'en-US';
-        recognition.maxAlternatives = 1;
-
-        recognition.onstart = () => {
-          console.log('Speech recognition started');
-          setIsListening(true);
-          setDebugInfo('Listening for answer...');
-        };
-
-        recognition.onresult = (event: any) => {
-          const transcript = event.results[0][0].transcript;
-          console.log('User said:', transcript);
-          setIsListening(false);
-          setDebugInfo(`User: "${transcript.substring(0, 30)}..."`);
-          handleUserResponse(transcript);
-        };
-
-        recognition.onerror = (event: any) => {
-          console.error('Speech recognition error:', event.error);
-          setIsListening(false);
-          setDebugInfo(`Recognition error: ${event.error}`);
-          
-  
-          if (['no-speech', 'audio-capture', 'network'].includes(event.error)) {
-            setTimeout(() => {
-              if (callStatus === CallStatus.ACTIVE && !isSpeakingRef.current) {
-                startListening();
-              }
-            }, 2000);
-          }
-        };
-
-        recognition.onend = () => {
-          console.log('Speech recognition ended');
-          setIsListening(false);
-          
-          if (callStatus === CallStatus.ACTIVE && !isSpeakingRef.current) {
-            setTimeout(() => {
-              startListening();
-            }, 1000);
-          }
-        };
-
-        recognitionRef.current = recognition;
-      }
-    };
-
-
-    const initVoices = () => {
-      if ('speechSynthesis' in window) {
-
-        const voices = window.speechSynthesis.getVoices();
-        if (voices.length === 0) {
-          window.speechSynthesis.onvoiceschanged = () => {
-            console.log('Voices loaded:', window.speechSynthesis.getVoices().length);
-            window.speechSynthesis.onvoiceschanged = null;
-          };
-        } else {
-          console.log('Voices already loaded:', voices.length);
-        }
-      }
-    };
-
-    initVoices();
-    initSpeechRecognition();
-
-    return () => {
-      stopSpeech();
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          console.log('Error stopping recognition during cleanup:', e);
-        }
-      }
-    };
+    const speechSupport = 'speechSynthesis' in window;
+    const recognitionSupport = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window;
+    setIsSpeechSupported(speechSupport);
+    setIsRecognitionSupported(recognitionSupport);
+    if (!speechSupport || !recognitionSupport) {
+      setDebugInfo('Browser not fully supported. Use Chrome, Edge, or Safari.');
+    } else {
+      setDebugInfo('Browser supported');
+    }
   }, []);
 
   useEffect(() => {
-    if (callStatus === CallStatus.FINISHED) {
-      setTimeout(() => router.push('/'), 1000);
+    if (!isSpeechSupported) return;
+    let mounted = true;
+    const loadVoices = () => {
+      if (!mounted) return;
+      try {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) {
+          const englishVoice = voices.find(v => v.lang.includes('en')) || voices[0];
+          selectedVoiceRef.current = englishVoice || null;
+          setVoicesLoaded(true);
+        } else {
+          setTimeout(loadVoices, 500);
+        }
+      } catch (error) {
+      }
+    };
+    loadVoices();
+    if (speechSynthesis.onvoiceschanged !== undefined) {
+      speechSynthesis.onvoiceschanged = loadVoices;
     }
-  }, [callStatus, router]);
+    return () => {
+      mounted = false;
+      if (speechSynthesis.onvoiceschanged !== undefined) {
+        speechSynthesis.onvoiceschanged = null;
+      }
+    };
+  }, [isSpeechSupported]);
 
-  const startListening = () => {
-    if (!recognitionRef.current || isListening || isSpeakingRef.current || callStatus !== CallStatus.ACTIVE) {
-      console.log('Cannot start listening:', {
-        hasRecognition: !!recognitionRef.current,
-        isListening,
-        isSpeaking: isSpeakingRef.current,
-        callStatus
-      });
-      return;
-    }
-    
+  const requestMicrophonePermission = useCallback(async (): Promise<boolean> => {
     try {
-      recognitionRef.current.stop();
-      setTimeout(() => {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      stream.getTracks().forEach(track => track.stop());
+      setHasMicrophonePermission(true);
+      setDebugInfo('Microphone permission granted');
+      return true;
+    } catch (error) {
+      setDebugInfo('Microphone access required.');
+      setHasMicrophonePermission(false);
+      return false;
+    }
+  }, []);
+
+  const initializeRecognition = useCallback(() => {
+    if (!isRecognitionSupported) return;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
+    recognitionRef.current = recognition;
+    let isRecognitionActive = false;
+    recognition.onstart = () => {
+      isRecognitionActive = true;
+      isListeningRef.current = true;
+      setIsListening(true);
+      setDebugInfo('Listening');
+      if (recognitionTimeoutRef.current) {
+        clearTimeout(recognitionTimeoutRef.current);
+      }
+      recognitionTimeoutRef.current = setTimeout(() => {
+        if (isRecognitionActive) {
+          recognition.stop();
+        }
+      }, 15000);
+    };
+    recognition.onresult = (event: any) => {
+      let finalTranscript = '';
+      let interimTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+      if (interimTranscript) {
+        setDebugInfo(`Listening: "${interimTranscript.substring(0, 50)}..."`);
+      }
+      if (finalTranscript) {
+        if (recognitionTimeoutRef.current) {
+          clearTimeout(recognitionTimeoutRef.current);
+          recognitionTimeoutRef.current = null;
+        }
+        recognition.stop();
+        setTimeout(() => {
+          if (!isProcessingRef.current) {
+            handleUserResponse(finalTranscript);
+          }
+        }, 500);
+      }
+    };
+    recognition.onerror = (event: any) => {
+      if (recognitionTimeoutRef.current) {
+        clearTimeout(recognitionTimeoutRef.current);
+        recognitionTimeoutRef.current = null;
+      }
+      isRecognitionActive = false;
+      isListeningRef.current = false;
+      setIsListening(false);
+    };
+    recognition.onend = () => {
+      isRecognitionActive = false;
+      isListeningRef.current = false;
+      setIsListening(false);
+      if (recognitionTimeoutRef.current) {
+        clearTimeout(recognitionTimeoutRef.current);
+        recognitionTimeoutRef.current = null;
+      }
+    };
+  }, [isRecognitionSupported]);
+
+  useEffect(() => {
+    if (isRecognitionSupported && hasMicrophonePermission) {
+      initializeRecognition();
+    }
+    return () => {
+      if (recognitionTimeoutRef.current) {
+        clearTimeout(recognitionTimeoutRef.current);
+      }
+      if (recognitionRef.current) {
         try {
-          recognitionRef.current.start();
-          console.log('Started listening');
-          setDebugInfo('Started listening...');
-        } catch (startError) {
-          console.error('Failed to start listening:', startError);
-          setDebugInfo(`Failed to start listening: ${startError}`);
+          recognitionRef.current.stop();
+        } catch {}
+      }
+    };
+  }, [isRecognitionSupported, hasMicrophonePermission, initializeRecognition]);
+
+  const speakText = useCallback(async (text: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if (!isSpeechSupported || !selectedVoiceRef.current) {
+        reject('Speech not supported or voice not loaded');
+        return;
+      }
+      if (speechSynthesis.speaking) {
+        speechSynthesis.cancel();
+      }
+      setTimeout(() => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.voice = selectedVoiceRef.current;
+        utterance.rate = 0.9;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+        currentUtteranceRef.current = utterance;
+        utterance.onstart = () => {
+          isSpeakingRef.current = true;
+          setIsSpeaking(true);
+          setDebugInfo('AI is speaking');
+        };
+        utterance.onend = () => {
+          isSpeakingRef.current = false;
+          setIsSpeaking(false);
+          currentUtteranceRef.current = null;
+          resolve();
+        };
+        utterance.onerror = () => {
+          isSpeakingRef.current = false;
+          setIsSpeaking(false);
+          currentUtteranceRef.current = null;
+          resolve();
+        };
+        try {
+          speechSynthesis.speak(utterance);
+        } catch (error) {
+          reject(error);
         }
       }, 200);
-    } catch (stopError) {
-      console.error('Error in startListening:', stopError);
-      try {
-        recognitionRef.current.start();
-      } catch (error) {
-        console.error('Failed to start recognition:', error);
-      }
-    }
-  };
+    });
+  }, [isSpeechSupported]);
 
-  const stopListening = () => {
-    if (recognitionRef.current) {
+  const stopSpeech = useCallback(() => {
+    if (isSpeechSupported && speechSynthesis.speaking) {
+      speechSynthesis.cancel();
+    }
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
+    currentUtteranceRef.current = null;
+  }, [isSpeechSupported]);
+
+  const startListening = useCallback(async () => {
+    if (!recognitionRef.current) return;
+    if (isListeningRef.current) return;
+    if (isSpeakingRef.current) return;
+    if (callStatus !== CallStatus.ACTIVE) return;
+    if (isProcessingRef.current) return;
+    try {
+      recognitionRef.current.start();
+    } catch {}
+  }, [callStatus]);
+
+  const stopListening = useCallback(() => {
+    if (recognitionRef.current && isListeningRef.current) {
       try {
         recognitionRef.current.stop();
-      } catch (e) {
-        console.log('Error stopping recognition:', e);
-      }
+      } catch {}
     }
+    isListeningRef.current = false;
     setIsListening(false);
-  };
+  }, []);
 
   const handleUserResponse = async (transcript: string) => {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+    stopListening();
+    setDebugInfo('Processing your answer');
     const userMessage: SavedMessage = {
       role: 'user',
       content: transcript
     };
     setMessages(prev => [...prev, userMessage]);
-
-    stopListening();
-
-    await getAIResponse(transcript);
-
-    if (currentQuestionIndex < (questions?.length || 5) - 1) {
-      setCurrentQuestionIndex(prev => prev + 1);
-      setTimeout(() => {
-        askNextQuestion();
-      }, 1000);
-    } else {
-      await speakText("Thank you for your time. The interview is now complete.");
-      setTimeout(() => {
-        handleDisconnect();
-      }, 2000);
-    }
-  };
-
-  const getAIResponse = async (userInput: string) => {
     try {
       const response = await fetch('/api/interview/response', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userInput,
+          userInput: transcript,
           question: questions?.[currentQuestionIndex] || '',
           conversationHistory: messages,
         }),
       });
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
+      let aiResponse = '';
+      if (response.ok) {
+        const data = await response.json();
+        aiResponse = data.response;
+      } else {
+        aiResponse = "Thank you for your answer. Let's move to the next question.";
       }
-
-      const data = await response.json();
       const assistantMessage: SavedMessage = {
         role: 'assistant',
-        content: data.response
+        content: aiResponse
       };
-
       setMessages(prev => [...prev, assistantMessage]);
-      
-      await speakText(data.response);
-      
-      if (currentQuestionIndex < (questions?.length || 5)) {
-        setTimeout(() => {
-          startListening();
-        }, 500);
-      }
-    } catch (error) {
-      console.error('Error getting AI response:', error);
-      const fallbackMessage: SavedMessage = {
-        role: 'assistant',
-        content: "Thank you for sharing that. Let's move on to the next question."
-      };
-      setMessages(prev => [...prev, fallbackMessage]);
-      await speakText(fallbackMessage.content);
-      
-      if (currentQuestionIndex < (questions?.length || 5) - 1) {
+      await speakText(aiResponse);
+      if (currentQuestionIndex < (questions?.length || 0) - 1) {
         setCurrentQuestionIndex(prev => prev + 1);
-        setTimeout(() => {
-          askNextQuestion();
-        }, 1000);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        isProcessingRef.current = false;
+        await askNextQuestion();
+      } else {
+        await speakText("Thank you for completing the interview. Have a great day.");
+        handleDisconnect();
+      }
+    } catch {
+      if (currentQuestionIndex < (questions?.length || 0) - 1) {
+        setCurrentQuestionIndex(prev => prev + 1);
+        isProcessingRef.current = false;
+        setTimeout(() => askNextQuestion(), 1000);
+      } else {
+        handleDisconnect();
       }
     }
   };
 
   const askNextQuestion = async () => {
-    console.log('askNextQuestion called, index:', currentQuestionIndex);
-    
-    if (!questions || questions.length === 0) {
-      console.error('No questions available!');
-      await speakText("No questions were loaded. Please contact support.");
+    if (!questions || currentQuestionIndex >= questions.length) {
+      handleDisconnect();
       return;
     }
-
-    if (currentQuestionIndex >= questions.length) {
-      console.log('All questions completed');
-      await speakText("That's all the questions. Thank you for your time.");
-      setTimeout(() => handleDisconnect(), 2000);
-      return;
-    }
-
     const question = questions[currentQuestionIndex];
-    console.log(`Asking question ${currentQuestionIndex + 1}:`, question);
-    
     const questionMessage: SavedMessage = {
       role: 'assistant',
       content: question
     };
-
     setMessages(prev => [...prev, questionMessage]);
-    setDebugInfo(`Asking question ${currentQuestionIndex + 1}`);
-    
-    stopSpeech();
-    stopListening();
-  
+    setDebugInfo(`Question ${currentQuestionIndex + 1}/${questions.length}`);
     try {
       await speakText(question);
-      
-      console.log('Question spoken, starting to listen...');
-      setTimeout(() => {
-        startListening();
-      }, 800);
-    } catch (error) {
-      console.error('Failed to speak question:', error);
-      setTimeout(() => {
-        startListening();
-      }, 800);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      startListening();
+    } catch {
+      startListening();
     }
   };
 
   const handleCall = async () => {
-    console.log('Starting interview with questions:', questions);
-    
     if (!questions || questions.length === 0) {
-      alert('No interview questions available. Please generate questions first.');
+      alert('No questions available');
       return;
     }
-
+    if (!voicesLoaded) {
+      alert('Please wait for voices to load');
+      return;
+    }
     setCallStatus(CallStatus.CONNECTING);
     stopSpeech();
     stopListening();
-    
     setMessages([]);
     setCurrentQuestionIndex(0);
-    setDebugInfo('Initializing...');
-
-
-    if (!('speechSynthesis' in window)) {
-      alert('Your browser does not support text-to-speech. Please use Chrome, Edge, or Safari.');
+    isProcessingRef.current = false;
+    setDebugInfo('Setting up interview');
+    const hasPermission = await requestMicrophonePermission();
+    if (!hasPermission) {
+      alert('Microphone access is required.');
       setCallStatus(CallStatus.INACTIVE);
       return;
     }
-
-    await new Promise<void>((resolve) => {
-      const voices = window.speechSynthesis.getVoices();
-      if (voices.length > 0) {
-        console.log('Voices available:', voices.map(v => v.name));
-        resolve();
-      } else {
-        console.log('Waiting for voices to load...');
-        window.speechSynthesis.onvoiceschanged = () => {
-          console.log('Voices loaded:', window.speechSynthesis.getVoices().length);
-          window.speechSynthesis.onvoiceschanged = null;
-          resolve();
-        };
-        setTimeout(resolve, 2000);
-      }
-    });
-
+    if (!recognitionRef.current) {
+      initializeRecognition();
+    }
     setCallStatus(CallStatus.ACTIVE);
-    setDebugInfo('Interview started');
-
-    const greeting = `Hello ${userName}! Let's begin your interview.`;
-    const greetingMessage: SavedMessage = {
-      role: 'assistant',
-      content: greeting
-    };
-    setMessages([greetingMessage]);
-
+    const greeting = `Hello ${userName}. I will ask you ${questions.length} questions. Let's begin.`;
+    setMessages([{ role: 'assistant', content: greeting }]);
     try {
       await speakText(greeting);
-      
-
-      console.log('Greeting complete, asking first question...');
-      setTimeout(() => {
-        askNextQuestion();
-      }, 1000);
-    } catch (error) {
-      console.error('Failed to speak greeting:', error);
-    
-      setTimeout(() => {
-        askNextQuestion();
-      }, 1000);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await askNextQuestion();
+    } catch {
+      setCallStatus(CallStatus.INACTIVE);
     }
   };
 
   const handleDisconnect = () => {
-    console.log('Disconnecting...');
     stopSpeech();
     stopListening();
+    isProcessingRef.current = false;
     setCallStatus(CallStatus.FINISHED);
-    setDebugInfo('Interview completed');
-  };
-
-  const handleDebugTestSpeech = () => {
-    console.log('Testing speech...');
-    speakText("This is a test message to check if speech is working.");
+    setDebugInfo('Interview complete');
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    setTimeout(() => router.push('/'), 2000);
   };
 
   const latestMessage = messages[messages.length - 1]?.content;
-  const isCallInactiveOrFinished = callStatus === CallStatus.INACTIVE || callStatus === CallStatus.FINISHED;
 
   return (
     <>
@@ -471,98 +401,53 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
             {isSpeaking && <span className='animate-speak' />}
           </div>
           <h3>AI Interviewer</h3>
+          {isSpeaking && (
+            <p className="text-sm text-primary-200 mt-2 animate-pulse">Speaking</p>
+          )}
           {isListening && (
-            <p className="text-sm text-success-100 mt-2 animate-pulse">🎤 Listening...</p>
+            <p className="text-sm text-success-100 mt-2 animate-pulse">Listening</p>
           )}
         </div>
+
         <div className="card-border">
           <div className="card-content">
             <Image src='/user-avatar.jpg' alt='user' width={540} height={540} className='rounded-full object-cover size-[120px]' />
             <h3>{userName}</h3>
-            {callStatus === CallStatus.ACTIVE && (
-              <div className="mt-2">
-                <p className="text-sm text-light-100">
-                  Question {currentQuestionIndex + 1} of {questions?.length || 5}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  {isSpeaking ? '🔊 Speaking...' : isListening ? '🎤 Listening...' : '✅ Ready'}
-                </p>
-              </div>
-            )}
           </div>
         </div>
       </div>
 
-      {messages.length > 0 && (
+      {latestMessage && (
         <div className='transcript-border'>
           <div className="transcript">
-            <p key={latestMessage} className={cn('transition-opacity duration-500 opacity-0', 'animate-fadeIn opacity-100')}>
-              {latestMessage}
-            </p>
+            <p className='animate-fadeIn'>{latestMessage}</p>
           </div>
         </div>
       )}
 
-      <div className="w-full flex justify-center gap-4 flex-wrap">
-        {callStatus !== CallStatus.ACTIVE ? (
-          <button
-            className='relative btn-call'
-            onClick={handleCall}
-            disabled={callStatus === CallStatus.CONNECTING}
-          >
-            <span
-              className={cn('absolute animate-ping rounded-full opacity-75', callStatus !== CallStatus.CONNECTING && 'hidden')}
-            />
-            <span>
-              {isCallInactiveOrFinished ? 'Start Interview' : 'Connecting...'}
-            </span>
-          </button>
-        ) : (
-          <>
-            <button 
-              className='btn-secondary' 
-              onClick={askNextQuestion}
-              disabled={!questions || currentQuestionIndex >= questions.length || isSpeaking}
-            >
-              {isSpeaking ? 'Speaking...' : 'Next Question'}
-            </button>
-            <button className='btn-disconnect' onClick={handleDisconnect}>
-              End Interview
-            </button>
-            <button 
-              className='btn-secondary bg-blue-500 text-xs' 
-              onClick={handleDebugTestSpeech}
-            >
-              Test Speech
-            </button>
-          </>
-        )}
-      </div>
-
-      <div className="w-full text-center mt-4">
-        <div className="inline-block bg-gray-800 text-gray-100 text-xs p-3 rounded-lg">
-          <p>Status: {callStatus}</p>
-          <p>Speaking: {isSpeaking.toString()} | Listening: {isListening.toString()}</p>
-          <p>Question: {currentQuestionIndex + 1}/{questions?.length || 0}</p>
-          <p className="text-yellow-300">{debugInfo}</p>
+      <div className="flex flex-col items-center gap-4 mt-8">
+        <button
+          onClick={handleCall}
+          disabled={callStatus === CallStatus.ACTIVE || callStatus === CallStatus.CONNECTING}
+          className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {callStatus === CallStatus.ACTIVE ? 'Interview in Progress' : 
+           callStatus === CallStatus.CONNECTING ? 'Connecting...' : 
+           'Start Interview'}
+        </button>
+        
+        <button
+          onClick={handleDisconnect}
+          disabled={callStatus !== CallStatus.ACTIVE}
+          className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          End Interview
+        </button>
+        
+        <div className="text-sm text-gray-600 mt-2">
+          {debugInfo}
         </div>
       </div>
-
-      {!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) && (
-        <div className="w-full text-center mt-4">
-          <p className="text-destructive-100">
-            Your browser doesn't support speech recognition. Please use Chrome, Edge, or Safari.
-          </p>
-        </div>
-      )}
-
-      {!('speechSynthesis' in window) && (
-        <div className="w-full text-center mt-4">
-          <p className="text-destructive-100">
-            Your browser doesn't support text-to-speech. Please use Chrome, Edge, or Safari.
-          </p>
-        </div>
-      )}
     </>
   );
 };
