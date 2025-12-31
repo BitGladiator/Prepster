@@ -95,7 +95,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
           autoGainControl: true
         }
       });
-      stream.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = stream;
       setHasMicrophonePermission(true);
       setDebugInfo('Microphone permission granted');
       return true;
@@ -116,9 +116,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
     recognition.lang = 'en-US';
     recognition.maxAlternatives = 1;
     recognitionRef.current = recognition;
-    let isRecognitionActive = false;
     recognition.onstart = () => {
-      isRecognitionActive = true;
       isListeningRef.current = true;
       setIsListening(true);
       setDebugInfo('Listening');
@@ -126,24 +124,15 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
         clearTimeout(recognitionTimeoutRef.current);
       }
       recognitionTimeoutRef.current = setTimeout(() => {
-        if (isRecognitionActive) {
-          recognition.stop();
-        }
+        recognition.stop();
       }, 15000);
     };
     recognition.onresult = (event: any) => {
       let finalTranscript = '';
-      let interimTranscript = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
+          finalTranscript += event.results[i][0].transcript;
         }
-      }
-      if (interimTranscript) {
-        setDebugInfo(`Listening: "${interimTranscript.substring(0, 50)}..."`);
       }
       if (finalTranscript) {
         if (recognitionTimeoutRef.current) {
@@ -151,24 +140,18 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
           recognitionTimeoutRef.current = null;
         }
         recognition.stop();
-        setTimeout(() => {
-          if (!isProcessingRef.current) {
-            handleUserResponse(finalTranscript);
-          }
-        }, 500);
+        handleUserResponse(finalTranscript);
       }
     };
-    recognition.onerror = (event: any) => {
+    recognition.onerror = () => {
       if (recognitionTimeoutRef.current) {
         clearTimeout(recognitionTimeoutRef.current);
         recognitionTimeoutRef.current = null;
       }
-      isRecognitionActive = false;
       isListeningRef.current = false;
       setIsListening(false);
     };
     recognition.onend = () => {
-      isRecognitionActive = false;
       isListeningRef.current = false;
       setIsListening(false);
       if (recognitionTimeoutRef.current) {
@@ -179,9 +162,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
   }, [isRecognitionSupported]);
 
   useEffect(() => {
-    if (isRecognitionSupported && hasMicrophonePermission) {
-      initializeRecognition();
-    }
+    initializeRecognition();
     return () => {
       if (recognitionTimeoutRef.current) {
         clearTimeout(recognitionTimeoutRef.current);
@@ -192,12 +173,12 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
         } catch {}
       }
     };
-  }, [isRecognitionSupported, hasMicrophonePermission, initializeRecognition]);
+  }, [initializeRecognition]);
 
   const speakText = useCallback(async (text: string): Promise<void> => {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (!isSpeechSupported || !selectedVoiceRef.current) {
-        reject('Speech not supported or voice not loaded');
+        resolve();
         return;
       }
       if (speechSynthesis.speaking) {
@@ -227,11 +208,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
           currentUtteranceRef.current = null;
           resolve();
         };
-        try {
-          speechSynthesis.speak(utterance);
-        } catch (error) {
-          reject(error);
-        }
+        speechSynthesis.speak(utterance);
       }, 200);
     });
   }, [isSpeechSupported]);
@@ -301,7 +278,6 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
       await speakText(aiResponse);
       if (currentQuestionIndex < (questions?.length || 0) - 1) {
         setCurrentQuestionIndex(prev => prev + 1);
-        await new Promise(resolve => setTimeout(resolve, 1000));
         isProcessingRef.current = false;
         await askNextQuestion();
       } else {
@@ -312,7 +288,7 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
       if (currentQuestionIndex < (questions?.length || 0) - 1) {
         setCurrentQuestionIndex(prev => prev + 1);
         isProcessingRef.current = false;
-        setTimeout(() => askNextQuestion(), 1000);
+        askNextQuestion();
       } else {
         handleDisconnect();
       }
@@ -331,13 +307,8 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
     };
     setMessages(prev => [...prev, questionMessage]);
     setDebugInfo(`Question ${currentQuestionIndex + 1}/${questions.length}`);
-    try {
-      await speakText(question);
-      await new Promise(resolve => setTimeout(resolve, 500));
-      startListening();
-    } catch {
-      startListening();
-    }
+    await speakText(question);
+    startListening();
   };
 
   const handleCall = async () => {
@@ -368,13 +339,8 @@ const VoiceInterviewManager = ({ userName, userId = '', type, questions }: Voice
     setCallStatus(CallStatus.ACTIVE);
     const greeting = `Hello ${userName}. I will ask you ${questions.length} questions. Let's begin.`;
     setMessages([{ role: 'assistant', content: greeting }]);
-    try {
-      await speakText(greeting);
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      await askNextQuestion();
-    } catch {
-      setCallStatus(CallStatus.INACTIVE);
-    }
+    await speakText(greeting);
+    await askNextQuestion();
   };
 
   const handleDisconnect = () => {
