@@ -1,31 +1,51 @@
-// app/api/deepgram/token/route.ts
 import { NextResponse } from 'next/server';
+
+export const runtime = 'nodejs';
 
 export async function GET() {
   try {
     const apiKey = process.env.DEEPGRAM_API_KEY;
-    
-    if (!apiKey) {
-      console.error('DEEPGRAM_API_KEY is not set in environment variables');
+    const projectId = process.env.DEEPGRAM_PROJECT_ID;
+
+    if (!apiKey || !projectId) {
       return NextResponse.json(
-        { error: 'Deepgram API key not configured' },
+        { error: 'Missing Deepgram credentials' },
         { status: 500 }
       );
     }
 
-    console.log('Providing Deepgram API key for streaming...');
-    
-    // Return the API key - frontend will use it for WebSocket connection
-    return NextResponse.json({ 
-      apiKey: apiKey
-    });
-  } catch (error) {
-    console.error('Error in Deepgram token route:', error);
+    const res = await fetch(
+      `https://api.deepgram.com/v1/projects/${projectId}/keys`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Token ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          comment: 'browser websocket token',
+          scopes: ['usage:write'],
+          time_to_live_in_seconds: 300,
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('Deepgram error:', text);
+      return NextResponse.json(
+        { error: 'Deepgram token failed', details: text },
+        { status: 500 }
+      );
+    }
+
+    const data = await res.json();
+
+    return NextResponse.json({ token: data.key });
+  } catch (err) {
+    console.error('Token route crashed:', err);
     return NextResponse.json(
-      { 
-        error: 'Failed to process request', 
-        details: error instanceof Error ? error.message : 'Unknown error' 
-      },
+      { error: 'Server crash' },
       { status: 500 }
     );
   }
