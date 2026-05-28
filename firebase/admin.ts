@@ -4,6 +4,7 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 
 
+
 const initFirebase = () => {
     const apps = getApps();
     if(!apps.length) {

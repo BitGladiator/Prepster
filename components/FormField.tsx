@@ -15,7 +15,7 @@ interface FormFieldProps<T extends FieldValues> {
   placeholder?: string;
   type?: "text" | "password" | "email" | "file";
 }
-const FormField = ({
+const FormField = <T extends FieldValues>({
   control,
   name,
   label,

@@ -2,6 +2,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
+import Vapi from "@vapi-ai/web";
+import { interviewer } from "../../../constants";
 
 enum CallStatus {
   INACTIVE = "INACTIVE",
@@ -32,359 +34,165 @@ const VoiceInterviewManager = ({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [callStatus, setCallStatus] = useState<CallStatus>(CallStatus.INACTIVE);
   const [messages, setMessages] = useState<SavedMessage[]>([]);
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [debugInfo, setDebugInfo] = useState("Ready to start");
 
-  const websocketRef = useRef<WebSocket | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const isProcessingRef = useRef(false);
-  const isSpeakingRef = useRef(false);
+  const vapiRef = useRef<Vapi | null>(null);
 
-  // Speak text using browser TTS
-  const speak = (text: string): Promise<void> => {
-    return new Promise((resolve) => {
-      if ("speechSynthesis" in window) {
-        if (window.speechSynthesis.speaking) {
-          window.speechSynthesis.cancel();
-        }
 
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 0.9;
-        utterance.pitch = 1.0;
-        utterance.volume = 1.0;
+  useEffect(() => {
+    let vapiInstance: Vapi | null = null;
 
-        const voices = window.speechSynthesis.getVoices();
-        const englishVoice =
-          voices.find((v) => v.lang.includes("en")) || voices[0];
-        if (englishVoice) utterance.voice = englishVoice;
+    if (typeof window !== "undefined") {
+      vapiInstance = new Vapi(process.env.NEXT_PUBLIC_VAPI_WEB_TOKEN || "");
+      vapiRef.current = vapiInstance;
 
-        utterance.onstart = () => {
-          isSpeakingRef.current = true;
-          setIsSpeaking(true);
-        };
+      vapiInstance.on("call-start", () => {
+        console.log("✅ Vapi call started successfully");
+        setCallStatus(CallStatus.ACTIVE);
+        setDebugInfo("Connected. Interview in progress...");
+      });
 
-        utterance.onend = () => {
-          isSpeakingRef.current = false;
-          setIsSpeaking(false);
-          resolve();
-        };
-
-        utterance.onerror = () => {
-          isSpeakingRef.current = false;
-          setIsSpeaking(false);
-          resolve();
-        };
-
-        window.speechSynthesis.speak(utterance);
-      } else {
-        resolve();
-      }
-    });
-  };
-
-  // Initialize Deepgram WebSocket
-  const initializeWebSocket = async () => {
-    try {
-      setDebugInfo('Connecting to speech service...');
-  
-      const ws = new WebSocket('ws://localhost:3000/api/deepgram/ws');
-  
-      ws.onopen = () => {
-        console.log('✅ Proxy WebSocket connected');
-        setDebugInfo('Connected');
-        startAudioStream(ws);
-      };
-  
-      ws.onmessage = (message) => {
-        const data = JSON.parse(message.data.toString());
-  
-        if (data.type === 'Results') {
-          const transcriptText =
-            data.channel?.alternatives?.[0]?.transcript;
-  
-          if (transcriptText && data.is_final) {
-            handleUserResponse(transcriptText);
-          } else if (transcriptText) {
-            setTranscript(transcriptText);
-          }
-        }
-      };
-  
-      ws.onerror = (err) => {
-        console.error('WebSocket error:', err);
-        setDebugInfo('WebSocket error');
-      };
-  
-      ws.onclose = () => {
-        console.log('WebSocket closed');
+      vapiInstance.on("call-end", () => {
+        console.log("ℹ️ Vapi call ended");
+        setCallStatus(CallStatus.FINISHED);
         setIsListening(false);
-      };
-  
-      websocketRef.current = ws;
-    } catch (err) {
-      console.error(err);
-      setDebugInfo('Failed to connect');
-    }
-  };
-  
+        setIsSpeaking(false);
+        setTranscript("");
+        setDebugInfo("Interview complete");
 
-  // Start audio stream and send to Deepgram
-  const startAudioStream = async (ws: WebSocket) => {
-    try {
-      // Stop any existing stream first
-      stopAudioStream();
-
-      console.log("Requesting microphone access...");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        
+        setTimeout(() => {
+          router.push("/");
+        }, 2000);
       });
 
-      mediaStreamRef.current = stream;
+      vapiInstance.on("speech-start", () => {
+        setIsSpeaking(true);
+        setIsListening(false);
+      });
 
-      // Create audio context with the stream's sample rate
-      const audioContext = new AudioContext({ sampleRate: 16000 });
-      audioContextRef.current = audioContext;
+      vapiInstance.on("speech-end", () => {
+        setIsSpeaking(false);
+        setIsListening(true);
+      });
 
-      const source = audioContext.createMediaStreamSource(stream);
+      vapiInstance.on("message", (message: any) => {
+        if (message.type === "transcript") {
+          if (message.transcriptType === "partial") {
+            setTranscript(message.transcript);
+          } else if (message.transcriptType === "final") {
+            const role = message.role === "user" ? "user" : "assistant";
+            setMessages((prev) => [
+              ...prev,
+              { role, content: message.transcript },
+            ]);
+            setTranscript("");
 
-      // Create processor for audio processing
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
-
-      processor.onaudioprocess = (e) => {
-        if (ws.readyState === WebSocket.OPEN && isListening) {
-          const inputData = e.inputBuffer.getChannelData(0);
-
-          // Convert Float32Array to Int16Array for Deepgram
-          const int16Array = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            // Convert from float (-1 to 1) to 16-bit integer
-            const sample = inputData[i];
-            int16Array[i] = sample < 0 ? sample * 32768 : sample * 32767;
-          }
-
-          // Send raw PCM data to Deepgram
-          try {
-            ws.send(int16Array.buffer);
-          } catch (error) {
-            console.error("Error sending audio to WebSocket:", error);
+          
+            if (role === "assistant") {
+              const lowerText = message.transcript.toLowerCase();
+              if (
+                lowerText.includes("thank you for completing the interview") ||
+                lowerText.includes("thank you for your time") ||
+                lowerText.includes("goodbye")
+              ) {
+                console.log("Detected end of interview phrase in transcript. Stopping call...");
+                vapiRef.current?.stop();
+              }
+            }
           }
         }
-      };
-
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-
-      setIsListening(true);
-      setDebugInfo("Listening... Speak now...");
-    } catch (error) {
-      console.error("Error starting audio stream:", error);
-      setDebugInfo("Microphone access denied");
-
-      // If microphone access fails, try with simpler constraints
-      try {
-        console.log("Trying with simpler audio constraints...");
-        const fallbackStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        });
-        mediaStreamRef.current = fallbackStream;
-        setDebugInfo("Using fallback audio settings");
-      } catch (fallbackError) {
-        console.error("Fallback also failed:", fallbackError);
-      }
-    }
-  };
-
-  // Stop audio stream
-  const stopAudioStream = () => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => {
-        track.stop();
-      });
-      mediaStreamRef.current = null;
-    }
-
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
-    }
-
-    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-
-    setIsListening(false);
-    setTranscript("");
-  };
-
-  // Handle user response
-  const handleUserResponse = async (userTranscript: string) => {
-    if (isProcessingRef.current) return;
-    isProcessingRef.current = true;
-
-    console.log("Processing user response:", userTranscript);
-    stopAudioStream();
-    setDebugInfo("Processing your answer...");
-
-    const userMessage: SavedMessage = {
-      role: "user",
-      content: userTranscript,
-    };
-    setMessages((prev) => [...prev, userMessage]);
-
-    try {
-      const response = await fetch("/api/interview/response", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userInput: userTranscript,
-          question: questions[currentQuestionIndex] || "",
-          conversationHistory: messages,
-        }),
       });
 
-      let aiResponse =
-        "Thank you for your answer. Let's move to the next question.";
-      if (response.ok) {
-        const data = await response.json();
-        aiResponse = data.response;
-      }
+      vapiInstance.on("error", async (err: any) => {
+        console.error("Vapi error:", err);
+        
+        let detail = "";
+        try {
+          if (err && err.error instanceof Response) {
+            detail = await err.error.clone().text();
+          } else if (err instanceof Response) {
+            detail = await err.clone().text();
+          }
+        } catch (e) {
+          console.error("Could not parse Vapi error response:", e);
+        }
 
-      const assistantMessage: SavedMessage = {
-        role: "assistant",
-        content: aiResponse,
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-
-      await speak(aiResponse);
-
-      if (currentQuestionIndex < questions.length - 1) {
-        setCurrentQuestionIndex((prev) => prev + 1);
-        isProcessingRef.current = false;
-        await askNextQuestion(currentQuestionIndex + 1);
-      } else {
-        await speak(
-          "Thank you for completing the interview. Have a great day!"
-        );
-        handleDisconnect();
-      }
-    } catch (error) {
-      console.error("Error processing response:", error);
-      isProcessingRef.current = false;
-      if (currentQuestionIndex < questions.length - 1) {
-        setCurrentQuestionIndex((prev) => prev + 1);
-        askNextQuestion(currentQuestionIndex + 1);
-      } else {
-        handleDisconnect();
-      }
-    }
-  };
-
-  // Ask next question
-  const askNextQuestion = async (questionIndex: number) => {
-    if (!questions || questionIndex >= questions.length) {
-      handleDisconnect();
-      return;
+        if (detail) {
+          console.error("Vapi detailed API error:", detail);
+          setDebugInfo(`Call failed: ${detail}`);
+        } else {
+          setDebugInfo("Call failed. Please try again.");
+        }
+        setCallStatus(CallStatus.INACTIVE);
+      });
     }
 
-    const question = questions[questionIndex];
-    const questionMessage: SavedMessage = {
-      role: "assistant",
-      content: question,
+    return () => {
+      if (vapiInstance) {
+        vapiInstance.stop();
+      }
     };
-    setMessages((prev) => [...prev, questionMessage]);
-    setDebugInfo(`Question ${questionIndex + 1}/${questions.length}`);
+  }, [router]);
 
-    await speak(question);
-
-    // Start listening for answer
-    if (websocketRef.current?.readyState === WebSocket.OPEN) {
-      startAudioStream(websocketRef.current);
-    } else {
-      console.log("WebSocket not open, reinitializing...");
-      await initializeWebSocket();
-    }
-  };
-
-  // Start interview
+  
   const handleCall = async () => {
     if (!questions || questions.length === 0) {
       alert("No questions available");
       return;
     }
 
-    setCallStatus(CallStatus.CONNECTING);
-    setMessages([]);
-    setCurrentQuestionIndex(0);
-    isProcessingRef.current = false;
-
-    // First, stop any existing connections
-    handleDisconnect();
-
-    // Initialize WebSocket
-    await initializeWebSocket();
-
-    // Wait a bit for connection
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-
-    // Check if connection was successful
-    if (websocketRef.current?.readyState !== WebSocket.OPEN) {
-      setDebugInfo("Failed to connect. Please try again.");
-      setCallStatus(CallStatus.INACTIVE);
+    if (!vapiRef.current) {
+      setDebugInfo("Voice assistant not initialized");
       return;
     }
 
-    setCallStatus(CallStatus.ACTIVE);
+    setCallStatus(CallStatus.CONNECTING);
+    setMessages([]);
+    setTranscript("");
+    setDebugInfo("Connecting to interviewer...");
 
-    const greeting = `Hello ${userName}. I will ask you ${questions.length} questions. Let's begin.`;
-    setMessages([{ role: "assistant", content: greeting }]);
+    const baseSystemPrompt = interviewer.model?.messages?.[0]?.content || "";
+    const formattedQuestions = questions.map((q, idx) => `${idx + 1}. ${q}`).join("\n");
+    const systemPrompt = baseSystemPrompt.replace("{{questions}}", formattedQuestions);
 
-    await speak(greeting);
-    await askNextQuestion(0);
+    const dynamicInterviewer = {
+      ...interviewer,
+      model: {
+        ...interviewer.model,
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt,
+          },
+        ],
+      },
+      endCallPhrases: [
+        "thank you for completing the interview",
+        "thank you for your time",
+        "goodbye"
+      ],
+      clientMessages: ["transcript"],
+    };
+
+    try {
+      vapiRef.current.start(dynamicInterviewer as any);
+    } catch (err) {
+      console.error("Failed to start Vapi call:", err);
+      setDebugInfo("Failed to connect");
+      setCallStatus(CallStatus.INACTIVE);
+    }
   };
 
-  // End interview
+
   const handleDisconnect = () => {
     console.log("Disconnecting...");
-
-    stopAudioStream();
-
-    if (websocketRef.current) {
-      websocketRef.current.close();
-      websocketRef.current = null;
+    if (vapiRef.current) {
+      vapiRef.current.stop();
     }
-
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-
-    isProcessingRef.current = false;
-    setCallStatus(CallStatus.FINISHED);
-    setDebugInfo("Interview complete");
-    setTranscript("");
-
-    setTimeout(() => {
-      router.push("/");
-    }, 2000);
   };
-
-  // Cleanup
-  useEffect(() => {
-    return () => {
-      handleDisconnect();
-    };
-  }, []);
 
   const latestMessage = messages[messages.length - 1]?.content;
 

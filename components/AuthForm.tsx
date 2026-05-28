@@ -25,7 +25,6 @@ const authFormSchema = (type: FormType) => {
 const AuthForm = ({ type }: { type: FormType }) => {
   const router = useRouter();
   const formSchema = authFormSchema(type);
-  // 1. Define your form.
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -35,7 +34,6 @@ const AuthForm = ({ type }: { type: FormType }) => {
     },
   });
 
-  // 2. Define a submit handler.
   async function onSubmit(values: z.infer<typeof formSchema>) {
     try {
       if (type === "sign-up") {
@@ -70,7 +68,6 @@ const AuthForm = ({ type }: { type: FormType }) => {
       }
     } catch (error) {
       console.error(error);
-      // Handle errors here.
       toast.error(`There was an error: ${error}`);
     }
   }
